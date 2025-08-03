@@ -1,0 +1,34 @@
+ var llmInferenceOptions = LlmInference.LlmInferenceOptions.builder()
+            .setModelPath("/data/local/tmp/llm/model_version.task")
+            .build();
+        var llmInference = LlmInference.createFromOptions(this, llmInferenceOptions)
+        var llmInferenceBackend = LlmInferenceBackend(llmInference, GemmaFormatter())
+        var systemInstruction = Content.newBuilder()
+            .setRole("system")
+            .addParts(Part.newBuilder().setText("You are a helpful assistant."))
+            .build();
+        var generativeModel = GenerativeModel(llmInferenceBackend, systemInstruction, listOf(tool))
+        scope.launch {
+            var chat = generativeModel.startChat();
+            println("${chat.sendMessage("How's the weather in San Francisco?")}")
+            return@launch
+            var response = chat.sendMessage("How's the weather in San Francisco?");
+            println("From Coroutine Ai Function Calling response --> $response")
+            var message = response.getCandidates(0).getContent().getParts(0);
+            // If the message contains a function call, execute the function.
+            if (message.hasFunctionCall()) {
+                var functionCall = message.functionCall
+                var args = functionCall.args.fieldsMap
+                var result = ""
+                when(functionCall.name){
+                    "getWeather" -> {
+                        result = getWeather(args["location"]?.stringValue)
+                    }
+                    else -> {result="Function not found"}
+                }
+                println(result)
+            }
+            else{
+                println("No function call found")
+            }
+        }
