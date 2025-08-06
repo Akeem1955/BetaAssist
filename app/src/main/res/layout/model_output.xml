@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="400.dp"
+    android:layout_gravity="center"
+    android:layout_marginHorizontal="20.dp"
+    android:background="#009688"
+    android:orientation="vertical">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="350.dp">
+
+        <TextView
+            android:id="@+id/model_output"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+
+            android:lineHeight="30.sp"
+            android:minHeight="400.dp"
+            android:paddingStart="16.dp"
+            android:paddingTop="16.dp"
+            android:paddingBottom="8.dp"
+            android:text="my name is akeem i was born in bethlehem i was a passionate deeveloper who like to bring innovotion and cretivity to your hands"
+            android:textColor="#FFFFFF"
+            android:textSize="20sp"
+            android:textStyle="bold|italic" />
+    </ScrollView>
+
+    <Button
+        android:id="@+id/cancel_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:elevation="24.dp"
+        android:text="Cancel" />
+
+
+</LinearLayout>

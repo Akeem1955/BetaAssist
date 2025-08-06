@@ -1,15 +1,18 @@
 package com.akimy.beta_assist
 
+import android.Manifest
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.accessibilityservice.GestureDescription.StrokeDescription
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
-import android.os.IBinder
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -18,26 +21,24 @@ import android.util.Log
 import android.view.Display
 import android.view.Gravity
 import android.view.LayoutInflater
-import android.view.SurfaceControl
-import android.view.SurfaceControlViewHost
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Button
 import android.widget.FrameLayout
-import androidx.compose.runtime.mutableStateOf
+import android.widget.TextView
+import androidx.core.content.ContextCompat
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.genai.llminference.GraphOptions
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
+import com.google.mediapipe.tasks.genai.llminference.ProgressListener
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.yield
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
@@ -60,7 +61,6 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
     private var tts: TextToSpeech? = null
     private var ttsListenerSucess = false
     private var stt: SpeechRecognizer? = null
-    private val state = mutableStateOf(false)
     private val SttRecognition  = object  : RecognitionListener {
         override fun onBeginningOfSpeech() {
             Log.d("BetaAssistService", "onBeginningOfSpeech")
@@ -112,31 +112,34 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
     }
     private var layout:FrameLayout?=null
     private var layoutB:FrameLayout?=null
+    private var layoutC:FrameLayout?=null
     private var windManager: WindowManager?=null
+    private var session: LlmInferenceSession?=null
 
 
     private val scope = CoroutineScope(Dispatchers.Default)
-
-
-
-
-
-
-
     override fun onAccessibilityEvent(p0: AccessibilityEvent?) {
         //println("Implemented ")
     }
-
-
-
-
     override fun onInterrupt() {
         println("BetaAssist Service Interrupted")
         //stt?.stopListening()
     }
-
     override fun onServiceConnected() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED) {
+            // Permission not granted - can't proceed with voice functionality
+            Log.e("BetaAssistService", "RECORD_AUDIO permission not granted")
+            readTextAloud("Audio recording permission is required for voice commands.")
+            // Optional: Send a broadcast to your main activity to request permission
+            val intent = Intent(this,MainActivity::class.java)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+            disableSelf()
+            return
+        }
         initializeModel(this)
+        initializeImageModel(this)
         packageManager = this.applicationContext.packageManager
         initVosk(this)
         tts = TextToSpeech(this){status->
@@ -173,7 +176,10 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
         windManager?.addView(layout, lp)
     }
     fun removeLoading(){
-        if (layout != null && windManager != null)windManager?.removeView(layout)
+        if (layout != null && windManager != null){
+            windManager?.removeView(layout)
+            layout = null
+        }
     }
     fun showProcessing(){
         if(windManager == null)windManager =  getSystemService(WINDOW_SERVICE) as WindowManager
@@ -194,43 +200,17 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
         windManager?.addView(layoutB, lp)
     }
     fun removeProcessing(){
-        if (layoutB != null && windManager != null)windManager?.removeView(layoutB)
-    }
-
-    private fun openApp(appName: String): Boolean{
-
-        val applications = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            packageManager?.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(0L))
+        if (layoutB != null && windManager != null){
+            windManager?.removeView(layoutB)
+            layoutB = null
         }
-        else{
-            packageManager?.getInstalledApplications(0)
-        }
-
-        for (i in 0..<(applications?.size?:0)){
-            val temp = applications?.get(i)
-            if(temp != null){
-                println("temp is not null")
-                val name = packageManager?.getApplicationLabel(temp)?:""
-                if(name.isEmpty())return false
-                if(name.contains(appName,true)){
-                    println("About to launch the application")
-                    println("${temp.packageName}: --> $name : ---> $appName")
-                    val launchIntent = packageManager?.getLaunchIntentForPackage(temp.packageName)
-                    startActivity(launchIntent)
-                    return true
-                }
-
-            }
-        }
-        return false
     }
     private fun welcomeUser(){
 
-        val msg = "Hi, My Name is Beta Assist. i Am an Accessibility Service, Built With Passion To Help You Make Your Device more Powerful!. Powered By Gemma 3n. By Google. To Call Me Say Gemma"
+        val msg = "Hi, My Name is Beta Assist. i Am an Accessibility Service, To Help You Make Your Device more Powerful!. Powered By Gemma 3n. To Call Me Say Gemma"
         readTextAloud(msg)
         scope.launch {
-            delay(12000)
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            delay(10000)
             withContext(Dispatchers.Main){
                 Log.d("BetaAssistService", "Starting Listening")
                 recognizeMicrophone()
@@ -280,6 +260,41 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
         }
         tts?.speak(text, TextToSpeech.QUEUE_ADD,bundle, UUID.randomUUID().toString())
     }
+    fun initializeModel(context: Context){
+        if(llmInference != null)return
+        // Set the configuration options for the LLM Inference task
+        //val refinedPrompt = "$fewshot Convert this command to JSON: $prompt"
+
+        println("Model About to Crank up the system...")
+        val taskOptions = LlmInference.LlmInferenceOptions.builder()
+            .setModelPath("/data/local/tmp/llm/model_version.task")
+            .setMaxTopK(64)
+            .build()
+
+
+// Create an instance of the LLM Inference task
+        llmInference = LlmInference.createFromOptions(context, taskOptions)
+        //val result = llmInference.generateResponse(refinedPrompt)
+        //Log.d("BetaAssistService", "Model Response ---> $result")
+        //processCommand(result.replace("```json","").replace("```","").trim())
+    }
+    fun modelNlp(instruction:String) {
+        scope.launch {
+            withContext(Dispatchers.Main){
+                showProcessing()
+            }
+            val refinedInstruction = "$fewshot Convert this command to JSON: $instruction"
+            val nlpOutputJson =llmInference?.generateResponse(refinedInstruction)
+            println("Model Response ---> $nlpOutputJson")
+            if (nlpOutputJson != null){
+                processCommand(nlpOutputJson.replace("```json","").replace("```","").trim())
+                println("Command Processed finished")
+            }
+            withContext(Dispatchers.Main){
+                removeProcessing()
+            }
+        }
+    }
     fun processCommand(json:String){
         println("Processing Command")
         println(json)
@@ -287,7 +302,7 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
             val command = Json.decodeFromString<Command>(json)
             val action = try {
                 ActionType.valueOf(command.function)
-            }catch (e:IllegalArgumentException){ActionType.Nothing}
+            }catch (_:IllegalArgumentException){ActionType.Nothing}
             when(action){
                 ActionType.openApp -> {
                     val appName =command.appName
@@ -324,12 +339,18 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
                 ActionType.Nothing -> {
                     readTextAloud("Sorry i May not be able to do That.")
                 }
-                ActionType.jumiaOrder -> {
-                    if(command.query != null){
-                        jumiaOrder(command.query!!)
-                    }else{
-                        readTextAloud("Sorry Jumia Order processing Failed..")
-                    }
+
+                ActionType.rightSwipeGesture -> {
+                    rightSwipeGesture()
+                }
+                ActionType.leftSwipeGesture -> {
+                    leftSwipeGesture()
+                }
+                ActionType.upSwipeGesture -> {
+                    upSwipeGesture()
+                }
+                ActionType.downSwipeGesture -> {
+                    downSwipeGesture()
                 }
             }
 
@@ -340,46 +361,37 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
             println(e.message)
         }
     }
+    private fun openApp(appName: String): Boolean{
 
-    fun initializeModel(context: Context){
-        if(llmInference != null)return
-        // Set the configuration options for the LLM Inference task
-        //val refinedPrompt = "$fewshot Convert this command to JSON: $prompt"
+        val applications = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager?.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(0L))
+        }
+        else{
+            packageManager?.getInstalledApplications(0)
+        }
 
-        println("Model About to Crank up the system...")
-        val taskOptions = LlmInference.LlmInferenceOptions.builder()
-            .setModelPath("/data/local/tmp/llm/model_version.task")
-            .setMaxTopK(64)
-            .build()
+        for (i in 0..<(applications?.size?:0)){
+            val temp = applications?.get(i)
+            if(temp != null){
+                println("temp is not null")
+                val name = packageManager?.getApplicationLabel(temp)?:""
+                if(name.isEmpty())return false
+                if(name.contains(appName,true)){
+                    println("About to launch the application")
+                    println("${temp.packageName}: --> $name : ---> $appName")
+                    val launchIntent = packageManager?.getLaunchIntentForPackage(temp.packageName)
+                    startActivity(launchIntent)
+                    return true
+                }
 
-
-// Create an instance of the LLM Inference task
-        llmInference = LlmInference.createFromOptions(context, taskOptions)
-        //val result = llmInference.generateResponse(refinedPrompt)
-        //Log.d("BetaAssistService", "Model Response ---> $result")
-        //processCommand(result.replace("```json","").replace("```","").trim())
-    }
-    fun modelNlp(instruction:String) {
-        scope.launch {
-            withContext(Dispatchers.Main){
-                showProcessing()
-            }
-            val refinedInstruction = "$fewshot Convert this command to JSON: $instruction"
-            val nlpOutputJson =llmInference?.generateResponse(refinedInstruction)
-            println("Model Response ---> $nlpOutputJson")
-            if (nlpOutputJson != null){
-                processCommand(nlpOutputJson.replace("```json","").replace("```","").trim())
-                println("Command Processed finished")
-            }
-            withContext(Dispatchers.Main){
-                removeProcessing()
             }
         }
+        return false
     }
-    fun describeScreen(prompt: String){
+    private fun describeScreen(prompt: String){
         processImage(prompt)
     }
-    fun extractText(){
+    private fun extractText(){
         scope.launch {
             if(rootInActiveWindow == null)return@launch
             val deque: ArrayDeque<AccessibilityNodeInfo> = ArrayDeque()
@@ -399,7 +411,7 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
             }
         }
     }
-    fun translateText(){
+    private fun translateText(){
         val textOnScreen = buildString {
             if (rootInActiveWindow == null)return
             val deque: ArrayDeque<AccessibilityNodeInfo> = ArrayDeque()
@@ -419,7 +431,7 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
         println("Text On Screen ---> $textOnScreen")
         translateLanguage("English",textOnScreen)
     }
-    fun summarizeTextOnscreen(){
+    private fun summarizeTextOnscreen(){
         val textOnScreen = buildString {
             if (rootInActiveWindow == null)return
             val deque: ArrayDeque<AccessibilityNodeInfo> = ArrayDeque()
@@ -437,55 +449,85 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
 
         }
         println("Text On Screen ---> $textOnScreen")
-        readTextAloud(summarizeText(textOnScreen))
+        summarizeText(textOnScreen)
     }
-    fun summarizeText(summary:String):String{
-        if (summary.isBlank())return ""
-        if (llmInference != null){
-            return llmInference?.generateResponse("Summarize This Text: $summary")?:""
-        }
-        return ""
-    }
-    fun jumiaOrder(query:String){
-        if(openApp("jumia")){
-            readTextAloud("No Jumia Application installed on your device...")
+    private fun summarizeText(summary:String){
+        if (summary.isBlank()){
+            readTextAloud("Sorry No Text Found")
             return
         }
-        scope.launch {
-            delay(5000)
-            if(rootInActiveWindow == null)return@launch
-            val deque: ArrayDeque<AccessibilityNodeInfo> = ArrayDeque()
-            deque.add(rootInActiveWindow)
-            while (deque.isNotEmpty()){
-                val node = deque.removeFirst()
+        conversation("Summarize This Text: $summary")
 
-                if (node.isShowingHintText && node.hintText.contains(query,true)){
-                    print("e enter")
-                    //node.text = "Shoe"
-                    //node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    val bundle = Bundle().apply {
-                        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,"Query")
-                    }
-                    node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,bundle)
-                    node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
-                    return@launch
-                }
-                print(node.text)
-                println("<----- Next Text --->")
-                for(i in 0..<node.childCount){
-                    val child = node.getChild(i)
-                    deque.add(child)
-                }
-            }
+    }
+    private fun translateLanguage(targetLanguage:String, language:String){
+        val prompt = "Translate The Below Text to $targetLanguage : $language"
+        conversation(prompt)
+    }
+    fun showModelText(textOutput:String){
+        println("About to show the model text........")
+        if(windManager == null)windManager =  getSystemService(WINDOW_SERVICE) as WindowManager
+        val lp = WindowManager.LayoutParams()
+        lp.type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        lp.format = PixelFormat.TRANSLUCENT
+
+        lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        lp.width = WindowManager.LayoutParams.MATCH_PARENT
+        lp.height = WindowManager.LayoutParams.MATCH_PARENT
+
+        lp.gravity = Gravity.CENTER
+        if(layoutC == null){
+            layoutC = FrameLayout(this)
+            val inflater = LayoutInflater.from(this)
+            inflater.inflate(R.layout.model_output, layoutC)
+            val tv = layoutC?.findViewById<TextView>(R.id.model_output)
+            tv?.text = textOutput
+
+
+            val cancelBtn = layoutC?.findViewById<Button>(R.id.cancel_button)
+            cancelBtn?.setOnClickListener { removeModelText() }
+
+            println("Why this thing no show nah which kind thing be this")
+            windManager?.addView(layoutC, lp)
+        }else {
+            val tv = layoutC?.findViewById<TextView>(R.id.model_output)
+            tv?.text = textOutput
+            windManager?.updateViewLayout(layoutC,lp)
         }
     }
-    fun translateLanguage(targetLanguage:String, language:String){
-        val prompt = "Translate The Below Text to $targetLanguage : $language"
-        scope.launch {
-            val result = llmInference?.generateResponse(prompt)?:""
-            println("Model Response ---> $result")
-            readTextAloud(result)
-            println("Ended..")
+    fun removeModelText(){
+        if (layoutC != null && windManager != null){
+            windManager?.removeView(layoutC)
+            layoutC=null
+        }
+    }
+    val builder = StringBuilder()
+    var textTracker = 100
+    var trackerHelper =0
+    val progress = ProgressListener<String> { partialResult, done ->
+
+        if(done){
+            println("Model Response ---> $partialResult")
+        }else{
+            if(layoutB != null){
+                removeProcessing()
+            }
+            println("Model Response else ---> $partialResult")
+            if(partialResult == "n" || partialResult == " n")return@ProgressListener
+            val htmlText = partialResult.replace("#","").replace("*","").replace("\\","")
+            builder.append(htmlText)
+            scope.launch {
+                if(builder.length > textTracker){
+                    readTextAloud(builder.substring(trackerHelper,builder.length))
+                    trackerHelper = builder.length
+                    textTracker+=100
+
+                }
+                withContext(Dispatchers.Main){
+                    showModelText(builder.toString())
+                }
+            }
+            println("Html Text ---> $htmlText")
+
         }
     }
     fun conversation(prompt:String){
@@ -493,9 +535,11 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
         //interaction between user and the ai model
         //just a question asking
         println("Why not fast")
-        val modelOutput = llmInference?.generateResponse(prompt)
+        //val modelOutput = llmInference?.generateResponse(prompt)
 
-        if(modelOutput != null) readTextAloud(modelOutput) else readTextAloud("Sorry Something Went Wrong")
+        llmInference?.generateResponseAsync(prompt,progress)
+
+       // if(modelOutput != null) readTextAloud(modelOutput) else readTextAloud("Sorry Something Went Wrong")
     }
     fun processImage(prompt: String){
         val executor  = mainExecutor
@@ -511,11 +555,11 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
                         println("not Null")
                         val cpuBitmap: Bitmap = resB.copy(Bitmap.Config.ARGB_8888, true)
                         //showLayout(cpuBitmap)
-                        val imageOutput = imageModel(this@BetaAssistService,cpuBitmap,prompt)
+                        imageModel(this@BetaAssistService,cpuBitmap,prompt)
                         withContext(Dispatchers.Main){
                             removeProcessing()
                         }
-                        readTextAloud(imageOutput)
+
                     }catch (e: Exception){
                         withContext(Dispatchers.Main){
                             removeProcessing()
@@ -539,10 +583,8 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
 
     }
 
+    private fun initializeImageModel(context:Context){
 
-
-    fun  imageModel(context: Context,uri: Bitmap,prompt: String = "Describe This"):String{
-        val mgImage = BitmapImageBuilder(uri).build()
         val sessionOptions = LlmInferenceSession.LlmInferenceSessionOptions.builder()
             .setTopK(10)
 
@@ -554,20 +596,150 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
             .setMaxNumImages(1)
             .build()
         val inference = LlmInference.createFromOptions(context,taskOption)
-        val session = LlmInferenceSession.createFromOptions(inference,sessionOptions)
+        session = LlmInferenceSession.createFromOptions(inference,sessionOptions)
+    }
+    fun  imageModel(context: Context,uri: Bitmap,prompt: String = "Describe This"){
+        if(session == null){
+            readTextAloud("Something Went Wrong Why Processing Your Request...")
+        }
+        val mgImage = BitmapImageBuilder(uri).build()
+//        val sessionOptions = LlmInferenceSession.LlmInferenceSessionOptions.builder()
+//            .setTopK(10)
+//
+//            .setTemperature(0.4f)
+//            .setGraphOptions(GraphOptions.builder().setEnableVisionModality(true).build())
+//            .build()
+//        val taskOption = LlmInference.LlmInferenceOptions.builder()
+//            .setModelPath("/data/local/tmp/llm/model_version.task")
+//            .setMaxNumImages(1)
+//            .build()
+//        val inference = LlmInference.createFromOptions(context,taskOption)
+//        val session = LlmInferenceSession.createFromOptions(inference,sessionOptions)
         println("About to add text chunk ............")
-        session.addQueryChunk(prompt)
+        session?.addQueryChunk(prompt)
         println("About to add image model.............")
-        session.addImage(mgImage)
+        session?.addImage(mgImage)
         println("Image model Added .............")
-        val result = session.generateResponse()?:"SomeThing Went Wrong Why Processing the image"
-        println(result)
-        println("------------------------------------------")
 
-        return result
+        //val result = session.generateResponse()?:"SomeThing Went Wrong Why Processing the image"
+        session?.generateResponseAsync(progress)
+        scope.launch {
+            delay(500)
+            withContext(Dispatchers.Main){
+                showProcessing()
+            }
+        }
+
     }
 
+//Gestures
 
+    fun rightSwipeGesture(duration: Long = 200L) {
+        val metrics = this.resources.displayMetrics
+        val startX = metrics.widthPixels.toFloat()/2
+        val startY = metrics.heightPixels.toFloat()/2
+        println("$startX:$startY")
+        val endX = 0f
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(endX, startY)
+        }
+
+        val gesture = GestureDescription.Builder()
+            .addStroke(StrokeDescription(path, 0, duration))
+            .build()
+
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription) {
+                super.onCompleted(gestureDescription)
+                println("Swipe Completed.....")
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription) {
+                super.onCancelled(gestureDescription)
+                println("Gesture Swipe cancelled")
+            }
+        }, null)
+    }
+    fun leftSwipeGesture(duration: Long = 100L) {
+        val metrics = this.resources.displayMetrics
+        val startX = metrics.widthPixels.toFloat()/2
+        val startY = metrics.heightPixels.toFloat()/2
+        val endX = metrics.widthPixels.toFloat()
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(endX, startY)
+        }
+
+        val gesture = GestureDescription.Builder()
+            .addStroke(StrokeDescription(path, 0, duration))
+            .build()
+
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription) {
+                super.onCompleted(gestureDescription)
+                println("Swipe Completed.....")
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription) {
+                super.onCancelled(gestureDescription)
+                println("Gesture Swipe cancelled")
+            }
+        }, null)
+    }
+    fun downSwipeGesture(duration: Long = 500L) {
+        val metrics = this.resources.displayMetrics
+        val startX = metrics.widthPixels.toFloat()/2
+        val startY = metrics.heightPixels.toFloat()/2
+        val endY = 0f
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(startX, endY)
+        }
+
+        val gesture = GestureDescription.Builder()
+            .addStroke(StrokeDescription(path, 0, duration))
+            .build()
+
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription) {
+                super.onCompleted(gestureDescription)
+                println("Swipe Completed.....")
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription) {
+                super.onCancelled(gestureDescription)
+                println("Gesture Swipe cancelled")
+            }
+        }, null)
+    }
+    fun upSwipeGesture(duration: Long = 100L) {
+        val metrics = this.resources.displayMetrics
+        println("Display metric height ${metrics.heightPixels}")
+        val startX = metrics.widthPixels.toFloat()/2
+        val startY = metrics.heightPixels.toFloat()/2
+        val endY = metrics.heightPixels.toFloat()
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(startX, endY)
+        }
+
+        val gesture = GestureDescription.Builder()
+            .addStroke(StrokeDescription(path, 0, duration))
+            .build()
+
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription) {
+                super.onCompleted(gestureDescription)
+                println("Swipe Completed.....")
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription) {
+                super.onCancelled(gestureDescription)
+                println("Gesture Swipe cancelled")
+            }
+        }, null)
+    }
     //calbacks
 
 
@@ -594,20 +766,10 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
         println("Wake Word ---> $wakeWord")
 
         if(wakeWord.equals("gemma",true)){
-            scope.launch {
-                conversation("How can i train for calisthenics")
-            }
-            //showLoading()
-            //showProcessing()
-            //describeScreen("what is This")
-            //showLoading()
-            //    translateText()
-            //summarizeTextOnscreen()
-            //extractText()
-            //val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            showLoading()
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
             speechService?.stop()
-            //readTextAloud("Hi My Name is Gemma How Are You doing")
-            //stt?.startListening(intent)
+            stt?.startListening(intent)
 
         }
     }
@@ -626,36 +788,6 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
 
 
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @Serializable
 data class Command(
     var function: String = ActionType.Nothing.name,
@@ -673,42 +805,13 @@ enum class ActionType {
     conversation,
     describeScreen,
     Nothing,
-    jumiaOrder
+    rightSwipeGesture,
+    leftSwipeGesture,
+    upSwipeGesture,
+    downSwipeGesture
 }
-
-enum class TargetType {
-    app,
-    home,
-    element,
-    item
-}
-
-enum class Direction {
-    back,
-    up,
-    down,
-    left,
-    right
-}
-
-enum class InputType {
-    text,
-    clear,
-    search
-}
-
-enum class ContentType {
-    messages,
-    image,
-    text
-}
-
-
-
-
-
 val fewshot = """
-    You are an assistant that processes user requests and determines which function to call from the BetaAssistService class. Based on the user's request, you should output a JSON object containing:
+    You are an assistant that processes user requests and determines which function name to call from the BetaAssistService class. Based on the user's request, you should output a JSON object containing:
     1. A "function" field with the name of the function to call
     2. Parameter fields if the function requires parameters
 
@@ -717,9 +820,12 @@ val fewshot = """
     - extractText() - Extracts and reads text from the screen
     - translateText() - Translates text on the screen
     - summarizeTextOnscreen() - Summarizes text on the screen
-    - conversation(prompt: String) - Has a conversation with the AI model
-    - describeScreen(prompt: String) - Describes what's visible on the screen including images 
-    - jumiaOrder(query: String) - Searches for products on Jumia app
+    - conversation(prompt: String) - Have a conversation with the AI model
+    - describeScreen(prompt: String) - Describes what's visible on the screen including images
+    - rightSwipeGesture() - Performs a right-to-left swipe gesture across the screen
+    - leftSwipeGesture() - Performs a left-to-right swipe gesture across the screen
+    - downSwipeGesture() - Performs a top-to-bottom swipe gesture on the screen
+    - upSwipeGesture() - Performs a bottom-to-top swipe gesture on the screen
    
 
     Format your response as a valid JSON object.
@@ -730,7 +836,7 @@ val fewshot = """
     }
     {
       "function": "describeScreen",
-      "prompt": "user instruction extracted here"
+      "prompt": "the instruction the user gave."
     }
     
 """.trimIndent()
