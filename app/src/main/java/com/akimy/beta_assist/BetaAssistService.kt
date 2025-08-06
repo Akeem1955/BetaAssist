@@ -61,7 +61,7 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
     private var tts: TextToSpeech? = null
     private var ttsListenerSucess = false
     private var stt: SpeechRecognizer? = null
-    private val SttRecognition  = object  : RecognitionListener {
+    private val SttRecognition  = object  : RecognitionListener  {
         override fun onBeginningOfSpeech() {
             Log.d("BetaAssistService", "onBeginningOfSpeech")
         }
@@ -292,6 +292,7 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
             }
             withContext(Dispatchers.Main){
                 removeProcessing()
+                speechService?.setPause(false)
             }
         }
     }
@@ -768,7 +769,7 @@ class BetaAssistService: AccessibilityService(), org.vosk.android.RecognitionLis
         if(wakeWord.equals("gemma",true)){
             showLoading()
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-            speechService?.stop()
+            speechService?.setPause(true)
             stt?.startListening(intent)
 
         }
